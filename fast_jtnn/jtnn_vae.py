@@ -28,13 +28,13 @@ class JTNNVAE(nn.Module):
         self.jtmpn = JTMPN(hidden_size, depthG)
         self.mpn = MPN(hidden_size, depthG)
 
-        self.A_assm = nn.Linear(latent_size, hidden_size, bias=False)
+        self.A_assm = nn.Linear(int(latent_size), int(hidden_size), bias=False)
         self.assm_loss = nn.CrossEntropyLoss(size_average=False)
 
-        self.T_mean = nn.Linear(hidden_size, latent_size)
-        self.T_var = nn.Linear(hidden_size, latent_size)
-        self.G_mean = nn.Linear(hidden_size, latent_size)
-        self.G_var = nn.Linear(hidden_size, latent_size)
+        self.T_mean = nn.Linear(int(hidden_size), int(latent_size))
+        self.T_var = nn.Linear(int(hidden_size), int(latent_size))
+        self.G_mean = nn.Linear(int(hidden_size), int(latent_size))
+        self.G_var = nn.Linear(int(hidden_size), int(latent_size))
 
     def encode(self, jtenc_holder, mpn_holder):
         tree_vecs, tree_mess = self.jtnn(*jtenc_holder)
@@ -173,7 +173,7 @@ class JTNNVAE(nn.Module):
         if len(cands) == 0 or (sum(aroma_score) < 0 and check_aroma):
             return None, cur_mol
 
-        cand_smiles,cand_amap = zip(*cands)
+        cand_smiles,cand_amap = list(zip(*cands))
         aroma_score = torch.Tensor(aroma_score).cuda()
         cands = [(smiles, all_nodes, cur_node) for smiles in cand_smiles]
 
@@ -193,7 +193,7 @@ class JTNNVAE(nn.Module):
 
         backup_mol = Chem.RWMol(cur_mol)
         pre_mol = cur_mol
-        for i in xrange(cand_idx.numel()):
+        for i in range(cand_idx.numel()):
             cur_mol = Chem.RWMol(backup_mol)
             pred_amap = cand_amap[cand_idx[i].item()]
             new_global_amap = copy.deepcopy(global_amap)

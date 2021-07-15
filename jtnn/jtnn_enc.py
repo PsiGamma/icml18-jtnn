@@ -4,7 +4,9 @@ from collections import deque
 from mol_tree import Vocab, MolTree
 from nnutils import create_var, GRU
 
-MAX_NB = 8
+#MAX_NB = 8
+#MAX_NB = 20 # UDPDATE 20200417 worked well with n_atoms < 50
+MAX_NB = 30 # UPDATE 20200629 adme model
 
 class JTNNEncoder(nn.Module):
 
@@ -33,9 +35,10 @@ class JTNNEncoder(nn.Module):
         
         h = {}
         max_depth = max([len(x) for x in orders])
+        #print("DEBUG max_depth " + str(max_depth))
         padding = create_var(torch.zeros(self.hidden_size), False)
 
-        for t in xrange(max_depth):
+        for t in range(max_depth):
             prop_list = []
             for order in orders:
                 if t < len(order):
@@ -54,12 +57,18 @@ class JTNNEncoder(nn.Module):
                     h_nei.append(h[(z,x)])
 
                 pad_len = MAX_NB - len(h_nei)
+                #print("len(h_nei): " + str(len(h_nei)))
+                #print("pad_len: " + str(pad_len))
                 h_nei.extend([padding] * pad_len)
+                #print("paddedlen(h_nei): " + str(len(h_nei)))
                 cur_h_nei.extend(h_nei)
 
             cur_x = create_var(torch.LongTensor(cur_x))
             cur_x = self.embedding(cur_x)
             cur_h_nei = torch.cat(cur_h_nei, dim=0).view(-1,MAX_NB,self.hidden_size)
+
+            #print("DEBUG cur_x shape " + str(cur_x.shape))
+            #print("DEBUG cur_h_nei shape " + str(cur_h_nei.shape))
 
             new_h = GRU(cur_x, cur_h_nei, self.W_z, self.W_r, self.U_r, self.W_h)
             for i,m in enumerate(prop_list):

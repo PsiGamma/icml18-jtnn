@@ -14,9 +14,9 @@ MAX_NB = 6
 def onek_encoding_unk(x, allowable_set):
     if x not in allowable_set:
         x = allowable_set[-1]
-    return map(lambda s: x == s, allowable_set)
+    return [x == s for s in allowable_set]
 
-def atom_features(atom):
+def atom_features(atom): # isn't the whole point of the NN to get feautures out of the raw data?? SMH ... PLus these are binary variables ... gosh ...
     return torch.Tensor(onek_encoding_unk(atom.GetSymbol(), ELEM_LIST) 
             + onek_encoding_unk(atom.GetDegree(), [0,1,2,3,4,5]) 
             + onek_encoding_unk(atom.GetFormalCharge(), [-1,-2,1,2,0])
@@ -51,15 +51,15 @@ def mol2graph(mol_batch):
             x = a1.GetIdx() + total_atoms
             y = a2.GetIdx() + total_atoms
 
-            b = len(all_bonds) 
+            b = len(all_bonds)  # b is the index of the current bond entry
             all_bonds.append((x,y))
             fbonds.append( torch.cat([fatoms[x], bond_features(bond)], 0) )
             in_bonds[y].append(b)
 
-            b = len(all_bonds)
-            all_bonds.append((y,x))
+            b = len(all_bonds) # b is the index of the current bond entry; each bond is entered twice ... one for x and one for y ...
+            all_bonds.append((y,x)) # bond ends at x? Is that the convention?
             fbonds.append( torch.cat([fatoms[y], bond_features(bond)], 0) )
-            in_bonds[x].append(b)
+            in_bonds[x].append(b) # in_bonds has the bond index ending at x 
         
         scope.append((total_atoms,n_atoms))
         total_atoms += n_atoms
@@ -70,15 +70,15 @@ def mol2graph(mol_batch):
     agraph = torch.zeros(total_atoms,MAX_NB).long()
     bgraph = torch.zeros(total_bonds,MAX_NB).long()
 
-    for a in xrange(total_atoms):
+    for a in range(total_atoms):
         for i,b in enumerate(in_bonds[a]):
             agraph[a,i] = b
 
-    for b1 in xrange(1, total_bonds):
-        x,y = all_bonds[b1]
-        for i,b2 in enumerate(in_bonds[x]):
-            if all_bonds[b2][0] != y:
-                bgraph[b1,i] = b2
+    for b1 in range(1, total_bonds):
+        x,y = all_bonds[b1] # get bond start and end point
+        for i,b2 in enumerate(in_bonds[x]): # for all bonds ending at x
+            if all_bonds[b2][0] != y: # if the starting point of the bond is not y (so not b1) 
+                bgraph[b1,i] = b2 # get the bond index that shares an endpoint with the current bond ... all those bonds include the features of y' 
 
     return fatoms, fbonds, agraph, bgraph, scope
 
@@ -93,17 +93,16 @@ class MPN(nn.Module):
         self.W_h = nn.Linear(hidden_size, hidden_size, bias=False)
         self.W_o = nn.Linear(ATOM_FDIM + hidden_size, hidden_size)
 
-    def forward(self, mol_graph):
+    def forward(self, mol_graph): # this is such a bad design!
         fatoms,fbonds,agraph,bgraph,scope = mol_graph
-        fatoms = create_var(fatoms)
-        fbonds = create_var(fbonds)
-        agraph = create_var(agraph)
-        bgraph = create_var(bgraph)
-
+        fatoms = create_var(fatoms) # create_var moves things to the GPU ...
+        fbonds = create_var(fbonds, requires_grad=None)
+        agraph = create_var(agraph, requires_grad=None)
+        bgraph = create_var(bgraph, requires_grad=None)
         binput = self.W_i(fbonds)
         message = nn.ReLU()(binput)
 
-        for i in xrange(self.depth - 1):
+        for i in range(self.depth - 1):
             nei_message = index_select_ND(message, 0, bgraph)
             nei_message = nei_message.sum(dim=1)
             nei_message = self.W_h(nei_message)
@@ -122,3 +121,6 @@ class MPN(nn.Module):
         mol_vecs = torch.stack(mol_vecs, dim=0)
         return mol_vecs
 
+
+
+    

@@ -73,7 +73,7 @@ class MolTreeNode(object):
 
         cands = enum_assemble(self, neighbors)
         if len(cands) > 0:
-            self.cands, self.cand_mols, _ = zip(*cands)
+            self.cands, self.cand_mols, _ = list(zip(*cands))
             self.cands = list(self.cands)
             self.cand_mols = list(self.cand_mols)
         else:
@@ -85,6 +85,7 @@ class MolTree(object):
     def __init__(self, smiles):
         self.smiles = smiles
         self.mol = get_mol(smiles)
+        #print("n_atoms: " + str(self.mol.GetNumAtoms()))
 
         #Stereo Generation
         mol = Chem.MolFromSmiles(smiles)
@@ -138,5 +139,5 @@ if __name__ == "__main__":
         for c in mol.nodes:
             cset.add(c.smiles)
     for x in cset:
-        print x
+        print(x)
 

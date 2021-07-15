@@ -6,6 +6,10 @@ from jtnn_enc import JTNNEncoder
 from jtnn_dec import JTNNDecoder
 from mpn import MPN, mol2graph
 from jtmpn import JTMPN
+# WG
+import torch.nn.functional as F
+import numpy as np
+from sklearn.metrics.pairwise import cosine_similarity;
 
 from chemutils import enum_assemble, set_atommap, copy_edit_mol, attach_mols, atom_equal, decode_stereo
 import rdkit
@@ -19,12 +23,13 @@ def set_batch_nodeID(mol_batch, vocab):
     for mol_tree in mol_batch:
         for node in mol_tree.nodes:
             node.idx = tot
-            node.wid = vocab.get_index(node.smiles)
+            wid = vocab.get_index(node.smiles)
+            if wid is not None:
+                node.wid = wid
             tot += 1
 
 class JTPropVAE(nn.Module):
-
-    def __init__(self, vocab, hidden_size, latent_size, depth):
+    def __init__(self, vocab, hidden_size, latent_size, depth, out_size=1, prop_loss=nn.MSELoss):
         super(JTPropVAE, self).__init__()
         self.vocab = vocab
         self.hidden_size = hidden_size
@@ -35,21 +40,46 @@ class JTPropVAE(nn.Module):
         self.jtnn = JTNNEncoder(vocab, hidden_size, self.embedding)
         self.jtmpn = JTMPN(hidden_size, depth)
         self.mpn = MPN(hidden_size, depth)
-        self.decoder = JTNNDecoder(vocab, hidden_size, latent_size / 2, self.embedding)
+        self.decoder = JTNNDecoder(vocab, hidden_size, int(latent_size / 2), self.embedding)
 
-        self.T_mean = nn.Linear(hidden_size, latent_size / 2)
-        self.T_var = nn.Linear(hidden_size, latent_size / 2)
-        self.G_mean = nn.Linear(hidden_size, latent_size / 2)
-        self.G_var = nn.Linear(hidden_size, latent_size / 2)
-        
+        self.T_mean = nn.Linear(hidden_size, int(latent_size / 2))
+        self.T_var = nn.Linear(hidden_size,  int(latent_size / 2))
+        self.G_mean = nn.Linear(hidden_size, int(latent_size / 2))
+        self.G_var = nn.Linear(hidden_size,  int(latent_size / 2))
+        # original
+        #self.propNN = nn.Sequential(
+        #        nn.Linear(self.latent_size, self.hidden_size),
+        #        nn.Tanh(),
+        #        nn.Linear(self.hidden_size, 1)
+        #)
+        # WG 11/04
         self.propNN = nn.Sequential(
-                nn.Linear(self.latent_size, self.hidden_size),
-                nn.Tanh(),
-                nn.Linear(self.hidden_size, 1)
-        )
-        self.prop_loss = nn.MSELoss()
+            nn.Linear(self.latent_size, self.hidden_size),
+            nn.LeakyReLU(0.01),
+            ResidualBlock(self.hidden_size),
+            ResidualBlock(self.hidden_size),
+            ResidualBlock(self.hidden_size),
+            ResidualBlock(self.hidden_size),
+            ResidualBlock(self.hidden_size),
+            ResidualBlock(self.hidden_size),
+            ResidualBlock(self.hidden_size),
+            nn.Linear(self.hidden_size, out_size)
+       )        
+        #self.prop_loss = nn.MSELoss() # WG
+        self.prop_loss = prop_loss()
         self.assm_loss = nn.CrossEntropyLoss(size_average=False)
         self.stereo_loss = nn.CrossEntropyLoss(size_average=False)
+
+        self.init()
+
+    def init(self): # WG
+        for param in self.parameters():
+            if param.dim() == 1:
+                nn.init.constant_(param, 0)
+            else:
+                nn.init.xavier_uniform_(param)
+        
+        
     
     def encode(self, mol_batch):
         set_batch_nodeID(mol_batch, self.vocab)
@@ -72,7 +102,7 @@ class JTPropVAE(nn.Module):
 
     def forward(self, mol_batch, beta=0):
         batch_size = len(mol_batch)
-        mol_batch, prop_batch = zip(*mol_batch)
+        mol_batch, prop_batch = list(zip(*mol_batch))
         tree_mess, tree_vec, mol_vec = self.encode(mol_batch)
 
         tree_mean = self.T_mean(tree_vec)
@@ -84,21 +114,23 @@ class JTPropVAE(nn.Module):
         z_log_var = torch.cat([tree_log_var,mol_log_var], dim=1)
         kl_loss = -0.5 * torch.sum(1.0 + z_log_var - z_mean * z_mean - torch.exp(z_log_var)) / batch_size
 
-        epsilon = create_var(torch.randn(batch_size, self.latent_size / 2), False)
+        epsilon = create_var(torch.randn(batch_size, int(self.latent_size / 2)), False)
         tree_vec = tree_mean + torch.exp(tree_log_var / 2) * epsilon
-        epsilon = create_var(torch.randn(batch_size, self.latent_size / 2), False)
+        epsilon = create_var(torch.randn(batch_size, int(self.latent_size / 2)), False)
         mol_vec = mol_mean + torch.exp(mol_log_var / 2) * epsilon
         
         word_loss, topo_loss, word_acc, topo_acc = self.decoder(mol_batch, tree_vec)
+        torch.cuda.empty_cache()
         assm_loss, assm_acc = self.assm(mol_batch, mol_vec, tree_mess)
         stereo_loss, stereo_acc = self.stereo(mol_batch, mol_vec)
 
         all_vec = torch.cat([tree_vec, mol_vec], dim=1)
-        prop_label = create_var(torch.Tensor(prop_batch))
+        #prop_label = create_var(torch.Tensor(prop_batch))
+        prop_label = create_var(torch.stack(prop_batch).squeeze()) # WG
         prop_loss = self.prop_loss(self.propNN(all_vec).squeeze(), prop_label)
         
         loss = word_loss + topo_loss + assm_loss + 2 * stereo_loss + beta * kl_loss + prop_loss
-        return loss, kl_loss.data[0], word_acc, topo_acc, assm_acc, stereo_acc, prop_loss.data[0]
+        return loss, kl_loss.item(), word_acc, topo_acc, assm_acc, stereo_acc, prop_loss.item()
 
     def assm(self, mol_batch, mol_vec, tree_mess):
         cands = []
@@ -110,14 +142,15 @@ class JTPropVAE(nn.Module):
                 cands.extend( [(cand, mol_tree.nodes, node) for cand in node.cand_mols] )
                 batch_idx.extend([i] * len(node.cands))
 
-        cand_vec = self.jtmpn(cands, tree_mess)
+        torch.cuda.empty_cache()        
+        cand_vec = self.jtmpn(cands, tree_mess) 
         cand_vec = self.G_mean(cand_vec)
 
         batch_idx = create_var(torch.LongTensor(batch_idx))
         mol_vec = mol_vec.index_select(0, batch_idx)
 
-        mol_vec = mol_vec.view(-1, 1, self.latent_size / 2)
-        cand_vec = cand_vec.view(-1, self.latent_size / 2, 1)
+        mol_vec = mol_vec.view(-1, 1, int(self.latent_size / 2))
+        cand_vec = cand_vec.view(-1, int(self.latent_size / 2), 1)
         scores = torch.bmm(mol_vec, cand_vec).squeeze()
         
         cnt,tot,acc = 0,0,0
@@ -131,7 +164,7 @@ class JTPropVAE(nn.Module):
                 cur_score = scores.narrow(0, tot, ncand)
                 tot += ncand
 
-                if cur_score.data[label] >= cur_score.max().data[0]:
+                if cur_score.data[label] >= cur_score.max().item():
                     acc += 1
 
                 label = create_var(torch.LongTensor([label]))
@@ -165,7 +198,7 @@ class JTPropVAE(nn.Module):
         all_loss = []
         for label,le in labels:
             cur_scores = scores.narrow(0, st, le)
-            if cur_scores.data[label] >= cur_scores.max().data[0]: 
+            if cur_scores.data[label] >= cur_scores.max().item(): # if the item with max cosine similarity is below (more similar) that of the index of the known 3D configuration ... shouldn't it be equal? Actually that's the loss below, is saying that. Is there some particular order to the stereo_cands?
                 acc += 1
             label = create_var(torch.LongTensor([label]))
             all_loss.append( self.stereo_loss(cur_scores.view(1,-1), label) )
@@ -183,15 +216,15 @@ class JTPropVAE(nn.Module):
         mol_mean = self.G_mean(mol_vec)
         mol_log_var = -torch.abs(self.G_var(mol_vec)) #Following Mueller et al.
 
-        epsilon = create_var(torch.randn(1, self.latent_size / 2), False)
+        epsilon = create_var(torch.randn(1, int(self.latent_size / 2)), False)
         tree_vec = tree_mean + torch.exp(tree_log_var / 2) * epsilon
-        epsilon = create_var(torch.randn(1, self.latent_size / 2), False)
+        epsilon = create_var(torch.randn(1, int(self.latent_size / 2)), False)
         mol_vec = mol_mean + torch.exp(mol_log_var / 2) * epsilon
         return self.decode(tree_vec, mol_vec, prob_decode)
 
     def sample_prior(self, prob_decode=False):
-        tree_vec = create_var(torch.randn(1, self.latent_size / 2), False)
-        mol_vec = create_var(torch.randn(1, self.latent_size / 2), False)
+        tree_vec = create_var(torch.randn(1, int(self.latent_size / 2)), False)
+        mol_vec = create_var(torch.randn(1, int(self.latent_size / 2)), False)
         return self.decode(tree_vec, mol_vec, prob_decode)
 
     def optimize(self, smiles, sim_cutoff, lr=2.0, num_iter=20):
@@ -201,7 +234,9 @@ class JTPropVAE(nn.Module):
         
         mol = Chem.MolFromSmiles(smiles)
         fp1 = AllChem.GetMorganFingerprint(mol, 2)
-        
+
+        # VAE calculations happen here.
+        # (mean, var) calculation for gaussian draws.
         tree_mean = self.T_mean(tree_vec)
         tree_log_var = -torch.abs(self.T_var(tree_vec)) #Following Mueller et al.
         mol_mean = self.G_mean(mol_vec)
@@ -210,17 +245,23 @@ class JTPropVAE(nn.Module):
         log_var = torch.cat([tree_log_var, mol_log_var], dim=1)
         cur_vec = create_var(mean.data, True)
 
-        visited = []
-        for step in xrange(num_iter):
+        visited = [] #WG I see, here we just go nuts
+        for step in range(num_iter):
             prop_val = self.propNN(cur_vec).squeeze()
+            # here, torch.autograd.grad takes derivative of one tensor w.r.t. another tensor,
+            # because all tensor ops are tracked for potential use with backprop anyways.
+            # this semantic is different from jax/autograd.grad, inwhich
+            # grad will return a function that will then return the gradient.
             grad = torch.autograd.grad(prop_val, cur_vec)[0]
-            cur_vec = cur_vec.data + lr * grad.data
+            cur_vec = cur_vec.data - lr * grad.data
             cur_vec = create_var(cur_vec, True)
+            # visited records the trajectory of sampled points.
+            # this is how the trajectory visualization is calculated.
             visited.append(cur_vec)
         
-        l,r = 0, num_iter - 1
+        l,r = 0, num_iter - 1 
         while l < r - 1:
-            mid = (l + r) / 2
+            mid = int((l + r) / 2)
             new_vec = visited[mid]
             tree_vec,mol_vec = torch.chunk(new_vec, 2, dim=1)
             new_smiles = self.decode(tree_vec, mol_vec, prob_decode=False)
@@ -247,18 +288,19 @@ class JTPropVAE(nn.Module):
             if sim >= sim_cutoff:
                 best_vec = new_vec
         """
+        # this portion grabs out the best vector that was found through optimization search.
         tree_vec,mol_vec = torch.chunk(visited[l], 2, dim=1)
         #tree_vec,mol_vec = torch.chunk(best_vec, 2, dim=1)
         new_smiles = self.decode(tree_vec, mol_vec, prob_decode=False)
         if new_smiles is None:
-            return smiles, 1.0
+            return smiles, 1.0, visited, l, tree_vec, mol_vec
         new_mol = Chem.MolFromSmiles(new_smiles)
         fp2 = AllChem.GetMorganFingerprint(new_mol, 2)
         sim = DataStructs.TanimotoSimilarity(fp1, fp2) 
         if sim >= sim_cutoff:
-            return new_smiles, sim
+            return new_smiles, sim, visited, l, tree_vec, mol_vec
         else:
-            return smiles, 1.0
+            return smiles, 1.0, visited, l, tree_vec, mol_vec      
     
     def decode(self, tree_vec, mol_vec, prob_decode):
         pred_root,pred_nodes = self.decoder.decode(tree_vec, prob_decode)
@@ -293,7 +335,7 @@ class JTPropVAE(nn.Module):
         stereo_vecs = self.G_mean(stereo_vecs)
         scores = nn.CosineSimilarity()(stereo_vecs, mol_vec)
         _,max_id = scores.max(dim=0)
-        return stereo_cands[max_id.data[0]]
+        return stereo_cands[max_id.item()]
 
     def dfs_assemble(self, tree_mess, mol_vec, all_nodes, cur_mol, global_amap, fa_amap, cur_node, fa_node, prob_decode):
         fa_nid = fa_node.nid if fa_node is not None else -1
@@ -309,7 +351,7 @@ class JTPropVAE(nn.Module):
         cands = enum_assemble(cur_node, neighbors, prev_nodes, cur_amap)
         if len(cands) == 0:
             return None
-        cand_smiles,cand_mols,cand_amap = zip(*cands)
+        cand_smiles,cand_mols,cand_amap = list(zip(*cands))
 
         cands = [(candmol, all_nodes, cur_node) for candmol in cand_mols]
 
@@ -325,9 +367,9 @@ class JTPropVAE(nn.Module):
             _,cand_idx = torch.sort(scores, descending=True)
 
         backup_mol = Chem.RWMol(cur_mol)
-        for i in xrange(cand_idx.numel()):
+        for i in range(cand_idx.numel()):
             cur_mol = Chem.RWMol(backup_mol)
-            pred_amap = cand_amap[cand_idx[i].data[0]]
+            pred_amap = cand_amap[cand_idx[i].item()]
             new_global_amap = copy.deepcopy(global_amap)
 
             for nei_id,ctr_atom,nei_atom in pred_amap:
@@ -351,3 +393,106 @@ class JTPropVAE(nn.Module):
             if result: return cur_mol
 
         return None
+
+    # --- WG 
+    def encode_single_smile(self, smiles):
+        mol_tree = MolTree(smiles)
+        mol_tree.recover()
+        _,tree_vec,mol_vec = self.encode([mol_tree])
+
+        tree_mean = self.T_mean(tree_vec)
+        mol_mean = self.G_mean(mol_vec)
+        return tree_mean, mol_mean
+   
+
+    def embed(self, smiles):
+        tree_mean, mol_mean = self.encode_single_smile(smiles);
+        mean = torch.cat([tree_mean, mol_mean], dim=1)
+        cur_vec = create_var(mean.data, False)            
+        return cur_vec;
+
+    def predict(self, smiles):            
+        prop_val = self.propNN(self.embed(smiles)).squeeze()
+        return prop_val;
+
+    def predict_from_embedding(self, embedding):
+        cur_vec = create_var(embedding, False)
+        print("HELLO")
+        prop_val = self.propNN(cur_vec).squeeze()
+        return prop_val.cpu().detach().numpy();
+    
+    def sample_and_predict(self, n_samples):
+        tree_vec = create_var(torch.randn(n_samples, int(self.latent_size / 2)), False)
+        mol_vec = create_var(torch.randn(n_samples, int(self.latent_size / 2)), False)
+        print(torch.randn(n_samples, int(self.latent_size / 2)).shape)
+        print(tree_vec.shape)
+        
+        mean = torch.cat([tree_vec, mol_vec], dim=1)
+        cur_vec = create_var(mean.data, True)
+        predictions = self.propNN(cur_vec).squeeze()
+
+        vectors = cur_vec.cpu().detach().numpy()
+        predictions = predictions.cpu().detach().numpy();
+
+        return vectors, predictions;
+
+    def sample_zero_mean_gaussian_and_predict(self, n_samples, sigma):
+        dim =int(self.latent_size)
+        center = torch.zeros(dim);
+        covariance = torch.eye(dim) * (sigma ** 2);
+        m = torch.distributions.MultivariateNormal(center, covariance)
+        samples = []
+        for i in range(n_samples):
+            samples.append(m.sample())
+        samples = torch.stack(samples);        
+        cur_vec = create_var(samples.data, False)
+        predictions = self.propNN(cur_vec).squeeze()
+
+        vectors = cur_vec.cpu().detach().numpy()
+        predictions = predictions.cpu().detach().numpy();
+
+        return vectors, predictions;
+
+    def sample_gaussian_and_predict(self, n_samples, mean, sigma):
+        dim =int(self.latent_size)
+        center = mean;
+        covariance = sigma;
+        m = torch.distributions.MultivariateNormal(center, covariance)
+        samples = []
+        for i in range(n_samples):
+            samples.append(m.sample())
+        samples = torch.stack(samples);        
+        cur_vec = create_var(samples.data, False)
+        predictions = self.propNN(cur_vec).squeeze()
+        vectors = cur_vec.cpu().detach().numpy()
+        predictions = predictions.cpu().detach().numpy();
+
+        return vectors, predictions;
+
+  
+
+# WG
+class ResidualBlock(nn.Module):
+    def __init__(self, hidden_size):
+        super(ResidualBlock, self).__init__()
+        self.hidden_size = hidden_size;
+        self.input_norm = nn.BatchNorm1d(hidden_size) # relu this
+        self.ip0 = nn.Linear(hidden_size, hidden_size, bias=False)
+        self.transform_norm = nn.BatchNorm1d(hidden_size) # relu this
+        self.drop_pre_ip1 = nn.Dropout(p=0.25)
+        #self.drop_pre_ip1 = nn.Dropout(p=0)
+        self.ip1 = nn.Linear(hidden_size, hidden_size, bias=False)
+
+    
+    def forward(self, x):
+        residual = F.relu ( self.input_norm( x ) )
+        residual = self.ip0( residual )
+        residual = self.drop_pre_ip1 (
+            F.relu (
+                self.transform_norm( residual) )
+        )
+        residual = self.ip1(residual)
+        x = x + residual
+        return x
+
+        

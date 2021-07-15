@@ -52,7 +52,7 @@ class MolTreeNode(object):
         if len(new_cands) > 0: cands = new_cands
 
         if len(cands) > 0:
-            self.cands, _ = zip(*cands)
+            self.cands, _ = list(zip(*cands))
             self.cands = list(self.cands)
         else:
             self.cands = []
@@ -122,5 +122,5 @@ if __name__ == "__main__":
         for c in mol.nodes:
             cset.add(c.smiles)
     for x in cset:
-        print x
+        print(x)
 

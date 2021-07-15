@@ -5,7 +5,9 @@ from nnutils import create_var, GRU
 from chemutils import enum_assemble
 import copy
 
-MAX_NB = 8
+#MAX_NB = 8
+#MAX_NB = 20 # UPDATE 20200417 worked well with n_atoms < 50
+MAX_NB = 30 # UPDATE 20200629 adme model
 MAX_DECODE_LEN = 100
 
 class JTNNDecoder(nn.Module):
@@ -22,14 +24,14 @@ class JTNNDecoder(nn.Module):
             self.embedding = embedding
 
         #GRU Weights
-        self.W_z = nn.Linear(2 * hidden_size, hidden_size)
+        self.W_z = nn.Linear(int(2 * hidden_size), hidden_size)
         self.U_r = nn.Linear(hidden_size, hidden_size, bias=False)
         self.W_r = nn.Linear(hidden_size, hidden_size)
-        self.W_h = nn.Linear(2 * hidden_size, hidden_size)
+        self.W_h = nn.Linear(int(2 * hidden_size), hidden_size)
 
         #Feature Aggregate Weights
-        self.W = nn.Linear(latent_size + hidden_size, hidden_size)
-        self.U = nn.Linear(latent_size + 2 * hidden_size, hidden_size)
+        self.W = nn.Linear(latent_size + hidden_size, int(hidden_size))
+        self.U = nn.Linear(latent_size + int(2 * hidden_size), hidden_size)
 
         #Output Weights
         self.W_o = nn.Linear(hidden_size, self.vocab_size)
@@ -70,7 +72,7 @@ class JTNNDecoder(nn.Module):
         padding = create_var(torch.zeros(self.hidden_size), False)
         h = {}
 
-        for t in xrange(max_iter):
+        for t in range(max_iter):
             prop_list = []
             batch_list = []
             for i,plist in enumerate(traces):
@@ -203,7 +205,7 @@ class JTNNDecoder(nn.Module):
 
         all_nodes = [root]
         h = {}
-        for step in xrange(MAX_DECODE_LEN):
+        for step in range(MAX_DECODE_LEN):
             node_x,fa_slot = stack[-1]
             cur_h_nei = [ h[(node_y.idx,node_x.idx)] for node_y in node_x.neighbors ]
             if len(cur_h_nei) > 0:
@@ -221,7 +223,7 @@ class JTNNDecoder(nn.Module):
             stop_score = nn.Sigmoid()(self.U_s(stop_hidden) * 20).squeeze()
             
             if prob_decode:
-                backtrack = (torch.bernoulli(1.0 - stop_score.data)[0] == 1)
+                backtrack = (torch.bernoulli(1.0 - stop_score.data).item() == 1)
             else:
                 backtrack = (stop_score.item() < 0.5)
 
@@ -229,7 +231,7 @@ class JTNNDecoder(nn.Module):
                 new_h = GRU(cur_x, cur_h_nei, self.W_z, self.W_r, self.U_r, self.W_h)
                 pred_hidden = torch.cat([new_h,mol_vec], dim=1)
                 pred_hidden = nn.ReLU()(self.W(pred_hidden))
-                pred_score = nn.Softmax()(self.W_o(pred_hidden) * 20)
+                pred_score = nn.Softmax(dim=1)(self.W_o(pred_hidden) * 20)
                 if prob_decode:
                     sort_wid = torch.multinomial(pred_score.data.squeeze(), 5)
                 else:
@@ -299,7 +301,7 @@ def have_slots(fa_slots, ch_slots):
 
     if len(matches) == 0: return False
 
-    fa_match,ch_match = zip(*matches)
+    fa_match,ch_match = list(zip(*matches))
     if len(set(fa_match)) == 1 and 1 < len(fa_slots) <= 2: #never remove atom from ring
         fa_slots.pop(fa_match[0])
     if len(set(ch_match)) == 1 and 1 < len(ch_slots) <= 2: #never remove atom from ring

@@ -1,3 +1,28 @@
+# README
+
+JT-VAE fork from the original git-hub [repo](https://github.com/wengong-jin/icml18-jtnn).
+
+We use this version for NIBR-internal generative chemistry
+investigations.
+
+Training, validation, and inference code sits in the ToxSquad
+[repo](https://bitbucket.prd.nibr.novartis.net/projects/SDA/repos/cbtds-toxsquad2/browse).
+
+See details in original README below for setup details.
+
+## Change log
+### 2019-11-11:
+
+* Updated codebase to python 3
+* Updated some outdated pytorch idioms 
+* Modified expected number of neighbors in encoder / decoder models
+* Residual layers for property prediction
+
+
+
+---
+# Original README 
+
 # Junction Tree Variational Autoencoder for Molecular Graph Generation
 
 Official implementation of our Junction Tree Variational Autoencoder [https://arxiv.org/abs/1802.04364](https://arxiv.org/abs/1802.04364)
