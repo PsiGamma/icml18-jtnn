@@ -2,12 +2,6 @@
 
 JT-VAE fork from the original git-hub [repo](https://github.com/wengong-jin/icml18-jtnn).
 
-We use this version for NIBR-internal generative chemistry
-investigations.
-
-Training, validation, and inference code sits in the ToxSquad
-[repo](https://bitbucket.prd.nibr.novartis.net/projects/SDA/repos/cbtds-toxsquad2/browse).
-
 See details in original README below for setup details.
 
 ## Change log

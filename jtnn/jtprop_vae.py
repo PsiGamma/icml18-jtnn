@@ -245,7 +245,7 @@ class JTPropVAE(nn.Module):
         log_var = torch.cat([tree_log_var, mol_log_var], dim=1)
         cur_vec = create_var(mean.data, True)
 
-        visited = [] #WG I see, here we just go nuts
+        visited = [] 
         for step in range(num_iter):
             prop_val = self.propNN(cur_vec).squeeze()
             # here, torch.autograd.grad takes derivative of one tensor w.r.t. another tensor,
@@ -417,7 +417,6 @@ class JTPropVAE(nn.Module):
 
     def predict_from_embedding(self, embedding):
         cur_vec = create_var(embedding, False)
-        print("HELLO")
         prop_val = self.propNN(cur_vec).squeeze()
         return prop_val.cpu().detach().numpy();
     
